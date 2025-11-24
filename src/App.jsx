@@ -257,7 +257,8 @@ export default function QuantBacktestPlatform() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-8 flex flex-col gap-6 relative">
+    // 注意：这里加了 w-full 来强制铺满宽度
+    <div className="w-full min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-8 flex flex-col gap-6 relative">
       
       {/* --- 数据连接助手 Modal (关键新增) --- */}
       {showDataHelper && (
