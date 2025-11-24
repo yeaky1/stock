@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Scatter } from 'recharts';
-import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson } from 'lucide-react';
+import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson, Database, BarChart2, TrendingUp, TrendingDown, Zap } from 'lucide-react';
 
 // --- A股 股票代码映射 ---
 const STOCK_PROFILES = {
@@ -30,6 +30,25 @@ const stringToSeed = (str) => {
     hash = hash & hash;
   }
   return Math.abs(hash);
+};
+
+// --- 剪贴板兼容处理 ---
+const copyToClipboard = (text) => {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.style.top = "0";
+  textArea.style.left = "0";
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  try {
+    document.execCommand('copy');
+  } catch (err) {
+    console.error('Fallback: Oops, unable to copy', err);
+  }
+  document.body.removeChild(textArea);
 };
 
 // --- Tushare API 调用 ---
@@ -68,7 +87,7 @@ const fetchTushareData = async (token, ticker, startDate, endDate) => {
     }));
   } catch (error) {
     if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      throw new Error('CORS_BLOCK'); // 特殊标记，用于触发引导弹窗
+      throw new Error('CORS_BLOCK'); 
     }
     throw error;
   }
@@ -202,18 +221,28 @@ export default function QuantBacktestPlatform() {
   const [showStrategyInfo, setShowStrategyInfo] = useState(false);
   
   // 数据与状态
-  const [useRealData, setUseRealData] = useState(true);
   const [apiToken, setApiToken] = useState('ed0e097e6172225f33825bd6a6545589ec836bab5c1be33b6674576d');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [dataMode, setDataMode] = useState('real'); // real, mock, manual
-  const [showDataHelper, setShowDataHelper] = useState(false); // 显式控制连接助手弹窗
-  const [manualJson, setManualJson] = useState(''); // 手动粘贴的数据
+  const [dataMode, setDataMode] = useState('tushare'); 
+  const [showDataHelper, setShowDataHelper] = useState(false); 
+  const [manualJson, setManualJson] = useState(''); 
+  const [copySuccess, setCopySuccess] = useState(false);
 
   useEffect(() => { runSimulation(); }, []);
 
-  // 生成Python脚本供用户复制
-  const pythonScript = `import tushare as ts\nimport json\n\n# 你的Token\ntoken = '${apiToken}'\npro = ts.pro_api(token)\n\n# 获取数据\ndf = pro.daily(ts_code='${STOCK_PROFILES[selectedStock].ts_code}', start_date='${startDate.replace(/-/g,'')}', end_date='${endDate.replace(/-/g,'')}')\n\n# 转换为JSON\ndata = []\nfor index, row in df.iterrows():\n    data.append({\n        "date": row['trade_date'][:4] + '-' + row['trade_date'][4:6] + '-' + row['trade_date'][6:],\n        "open": row['open'], "close": row['close'],\n        "high": row['high'], "low": row['low'], "volume": row['vol']\n    })\n\ndata.reverse() # 按日期正序\nprint(json.dumps(data))`;
+  // 动态生成脚本
+  const tushareScript = `import tushare as ts\nimport json\n\ntoken = '${apiToken}'\npro = ts.pro_api(token)\ndf = pro.daily(ts_code='${STOCK_PROFILES[selectedStock].ts_code}', start_date='${startDate.replace(/-/g,'')}', end_date='${endDate.replace(/-/g,'')}')\ndata = []\nfor index, row in df.iterrows():\n    data.append({\n        "date": row['trade_date'][:4] + '-' + row['trade_date'][4:6] + '-' + row['trade_date'][6:],\n        "open": row['open'], "close": row['close'],\n        "high": row['high'], "low": row['low'], "volume": row['vol']\n    })\ndata.reverse()\nprint(json.dumps(data))`;
+
+  const bsCode = STOCK_PROFILES[selectedStock].ts_code.split('.').reverse().join('.').toLowerCase(); 
+  const baostockScript = `import baostock as bs\nimport pandas as pd\nimport json\nlg = bs.login()\nrs = bs.query_history_k_data_plus("${bsCode}", "date,open,high,low,close,volume", start_date='${startDate}', end_date='${endDate}', frequency="d", adjustflag="3")\ndata_list = []\nwhile (rs.error_code == '0') & rs.next():\n    row = rs.get_row_data()\n    data_list.append({ "date": row[0], "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]) })\nbs.logout()\nprint(json.dumps(data_list))`;
+
+  const handleCopy = () => {
+      const text = dataMode === 'baostock' ? baostockScript : tushareScript;
+      copyToClipboard(text);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+  };
 
   const runSimulation = async () => {
     setIsLoading(true);
@@ -228,21 +257,27 @@ export default function QuantBacktestPlatform() {
           marketData = JSON.parse(manualJson);
         } catch (e) { throw new Error("JSON格式错误，请检查粘贴内容"); }
       } 
-      else if (useRealData) {
+      else if (dataMode === 'tushare') {
         try {
           marketData = await fetchTushareData(apiToken, selectedStock, startDate, endDate);
         } catch (err) {
           if (err.message === 'CORS_BLOCK') {
-            setShowDataHelper(true); // 弹出助手
+            setShowDataHelper(true);
             setErrorMsg("浏览器拦截了Tushare请求 (跨域限制)");
           } else {
             setErrorMsg(err.message);
           }
-          // 失败时不自动切模拟，而是中断等待用户处理
           setIsLoading(false);
           return;
         }
-      } else {
+      } 
+      else if (dataMode === 'baostock') {
+        setShowDataHelper(true);
+        setErrorMsg("Baostock 需使用本地 Python 脚本获取数据");
+        setIsLoading(false);
+        return;
+      }
+      else {
         marketData = generateMockData(selectedStock, startDate, endDate);
       }
 
@@ -256,90 +291,72 @@ export default function QuantBacktestPlatform() {
     }
   };
 
+  const handleModeSwitch = (mode) => {
+    setDataMode(mode);
+    setErrorMsg('');
+    if (mode === 'baostock') {
+      setShowDataHelper(true);
+    }
+  };
+
   return (
-    // 注意：这里加了 w-full 来强制铺满宽度
     <div className="w-full min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-8 flex flex-col gap-6 relative">
       
-      {/* --- 数据连接助手 Modal (关键新增) --- */}
+      {/* Modal 代码省略，与之前相同 */}
       {showDataHelper && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-slate-800 rounded-xl border border-slate-600 w-full max-w-3xl shadow-2xl flex flex-col max-h-[90vh]">
             <div className="p-6 border-b border-slate-700 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-red-400 flex items-center gap-2">
-                <AlertCircle /> 无法直接连接 Tushare
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Database className={dataMode === 'baostock' ? "text-purple-400" : "text-red-400"} />
+                {dataMode === 'baostock' ? "从 Baostock 获取数据" : "无法直接连接 Tushare"}
               </h2>
               <button onClick={() => setShowDataHelper(false)}><X className="text-slate-400 hover:text-white"/></button>
             </div>
             <div className="p-6 overflow-y-auto space-y-6">
               <p className="text-slate-300 text-sm">
-                这是浏览器的安全机制（CORS）拦截了请求，并非您的代码或Token错误。Tushare服务器不允许网页直接访问。
-                <br/>请选择以下任一方案解决：
+                {dataMode === 'baostock' 
+                  ? "Baostock (证券宝) 是纯 Python 库，不支持浏览器直接访问。请运行以下脚本获取数据。"
+                  : "这是浏览器的安全机制（CORS）拦截了请求。Tushare服务器不允许网页直接访问。"}
               </p>
-
-              {/* 方案 A */}
               <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700">
-                <h3 className="text-green-400 font-bold mb-2 flex items-center gap-2">方案一：Python 脚本搬运 (推荐 & 稳定)</h3>
-                <p className="text-xs text-slate-400 mb-3">在您本地电脑运行此脚本，获取真实数据，然后粘贴回来。</p>
+                <h3 className="text-green-400 font-bold mb-2 flex items-center gap-2">第一步：复制 Python 脚本</h3>
+                <p className="text-xs text-slate-400 mb-3">{dataMode === 'baostock' ? "需 pip install baostock pandas" : "需 pip install tushare"}</p>
                 <div className="bg-black p-3 rounded text-xs font-mono text-slate-300 overflow-x-auto relative group">
-                  <pre>{pythonScript}</pre>
-                  <button 
-                    onClick={() => navigator.clipboard.writeText(pythonScript)}
-                    className="absolute top-2 right-2 bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded flex items-center gap-1"
-                  >
-                    <Clipboard size={12}/> 复制代码
+                  <pre>{dataMode === 'baostock' ? baostockScript : tushareScript}</pre>
+                  <button onClick={handleCopy} className="absolute top-2 right-2 bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded flex items-center gap-1">
+                    <Clipboard size={12}/> {copySuccess ? "已复制" : "复制代码"}
                   </button>
                 </div>
               </div>
-
-              {/* 方案 B */}
               <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700">
-                <h3 className="text-blue-400 font-bold mb-2 flex items-center gap-2">方案二：手动粘贴数据</h3>
+                <h3 className="text-blue-400 font-bold mb-2 flex items-center gap-2">第二步：粘贴运行结果</h3>
                 <textarea 
                   value={manualJson}
-                  onChange={(e) => {
-                    setManualJson(e.target.value);
-                    setDataMode('manual');
-                    setUseRealData(false);
-                  }}
+                  onChange={(e) => { setManualJson(e.target.value); if(e.target.value) setDataMode('manual'); }}
                   placeholder="在此处粘贴 Python 脚本运行输出的 JSON 数据..."
                   className="w-full h-24 bg-slate-950 border border-slate-700 rounded p-2 text-xs font-mono text-green-300 focus:ring-1 focus:ring-blue-500 outline-none"
                 />
                 <button 
-                  onClick={() => {
-                    setShowDataHelper(false);
-                    runSimulation();
-                  }}
+                  onClick={() => { if (manualJson) { setDataMode('manual'); setShowDataHelper(false); runSimulation(); } }}
                   disabled={!manualJson}
                   className="mt-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed w-full"
                 >
-                  加载粘贴的数据
+                  加载数据并回测
                 </button>
               </div>
-
-               {/* 方案 C */}
-               <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700 opacity-70">
-                <h3 className="text-orange-400 font-bold mb-2 text-sm">方案三：使用浏览器插件 (仅限 Chrome/Edge)</h3>
-                <p className="text-xs text-slate-400">
-                  搜索安装插件 <strong>"Allow CORS: Access-Control-Allow-Origin"</strong> 并开启，即可在当前网页直接连接 Tushare。
-                </p>
-              </div>
-              
+              {dataMode === 'tushare' && (
                <div className="text-center pt-2">
-                <button onClick={() => {
-                  setUseRealData(false);
-                  setDataMode('mock');
-                  setShowDataHelper(false);
-                  setTimeout(runSimulation, 100);
-                }} className="text-slate-500 text-xs hover:text-slate-300 underline">
-                  放弃真实数据，使用高仿真模拟数据 &gt;
-                </button>
-              </div>
+                  <button onClick={() => { handleModeSwitch('mock'); setShowDataHelper(false); setTimeout(runSimulation, 100); }} className="text-slate-500 text-xs hover:text-slate-300 underline">
+                    放弃真实数据，使用高仿真模拟数据 &gt;
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-700 pb-4 gap-4">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
@@ -363,16 +380,15 @@ export default function QuantBacktestPlatform() {
         </div>
       </header>
 
-      {/* 错误提示栏 */}
       {errorMsg && !showDataHelper && (
         <div className="bg-red-500/10 border border-red-500/40 text-red-200 px-4 py-3 rounded-lg text-sm flex justify-between items-center shadow-sm">
           <div className="flex items-center gap-3">
             <AlertCircle size={18} className="shrink-0 text-red-400" />
             <span>{errorMsg}</span>
           </div>
-          {errorMsg.includes('CORS') && (
+          {(errorMsg.includes('CORS') || errorMsg.includes('Baostock')) && (
             <button onClick={() => setShowDataHelper(true)} className="text-xs bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded">
-              解决办法
+              获取数据脚本
             </button>
           )}
         </div>
@@ -381,33 +397,43 @@ export default function QuantBacktestPlatform() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* 左侧：设置面板 */}
         <div className="lg:col-span-3 space-y-6">
+          
+          {/* 1. 数据源模式 */}
           <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
              <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
               <Settings size={16} /> 数据源模式
             </h2>
             <div className="space-y-4">
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleModeSwitch('tushare')}
+                    className={`flex-1 py-2 text-xs rounded-lg border transition ${dataMode === 'tushare' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400 hover:bg-slate-800'}`}
+                  >
+                    Tushare (真实)
+                  </button>
+                  <button 
+                    onClick={() => handleModeSwitch('baostock')}
+                    className={`flex-1 py-2 text-xs rounded-lg border transition ${dataMode === 'baostock' ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400 hover:bg-slate-800'}`}
+                  >
+                    Baostock (真实)
+                  </button>
+                </div>
                 <button 
-                  onClick={() => { setUseRealData(true); setDataMode('real'); }}
-                  className={`flex-1 py-2 text-xs rounded-lg border ${useRealData && dataMode !== 'manual' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400'}`}
+                  onClick={() => handleModeSwitch('mock')}
+                  className={`w-full py-2 text-xs rounded-lg border transition ${dataMode === 'mock' ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400 hover:bg-slate-800'}`}
                 >
-                  真实(Tushare)
-                </button>
-                <button 
-                  onClick={() => { setUseRealData(false); setDataMode('mock'); }}
-                  className={`flex-1 py-2 text-xs rounded-lg border ${!useRealData && dataMode === 'mock' ? 'bg-orange-600 border-orange-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400'}`}
-                >
-                  模拟数据
+                  模拟数据 (固定随机)
                 </button>
               </div>
 
-              {useRealData && dataMode !== 'manual' && (
+              {dataMode === 'tushare' && (
                 <div>
                   <label className="block text-slate-400 text-xs mb-1.5">Tushare Token</label>
                   <input type="text" value={apiToken} onChange={(e) => setApiToken(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2 px-2 text-xs text-slate-300 focus:ring-1 focus:ring-blue-500 outline-none truncate"/>
                 </div>
               )}
-
+              
               <button 
                 onClick={() => setShowDataHelper(true)}
                 className={`w-full py-2 text-xs rounded-lg border flex items-center justify-center gap-2 ${dataMode === 'manual' ? 'bg-green-600 border-green-500 text-white' : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'}`}
@@ -418,6 +444,7 @@ export default function QuantBacktestPlatform() {
             </div>
           </div>
 
+          {/* 2. 标的与时间 */}
           <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
             <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
               <Search size={16} /> 标的与时间
@@ -443,6 +470,70 @@ export default function QuantBacktestPlatform() {
               </div>
             </div>
           </div>
+
+          {/* 3. 策略参数 (已恢复) */}
+          <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
+             <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
+              <Settings size={16} /> 策略参数
+            </h2>
+            <div className="space-y-5">
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-slate-400 text-xs">周期 (Window)</label>
+                  <span className="text-blue-400 text-xs font-mono">{bollingerPeriod}日</span>
+                </div>
+                <input type="range" min="5" max="60" step="1" value={bollingerPeriod} onChange={(e) => setBollingerPeriod(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+              </div>
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-slate-400 text-xs">标准差倍数 (StdDev)</label>
+                  <span className="text-orange-400 text-xs font-mono">{bollingerMultiplier}x</span>
+                </div>
+                <input type="range" min="1" max="4" step="0.1" value={bollingerMultiplier} onChange={(e) => setBollingerMultiplier(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-orange-500" />
+              </div>
+              <div>
+                <label className="block text-slate-400 text-xs mb-1.5">初始资金</label>
+                <div className="relative">
+                  <DollarSign size={12} className="absolute left-3 top-3 text-slate-500" />
+                  <input type="number" value={initialCapital} onChange={(e) => setInitialCapital(Number(e.target.value))} className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2 pl-8 pr-3 text-sm focus:outline-none focus:border-blue-500" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 4. 回测绩效面板 (已恢复并美化) */}
+          {results && (
+             <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg animate-in fade-in slide-in-from-bottom-4 duration-500">
+               <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
+                 <BarChart2 size={16} /> 核心绩效
+               </h2>
+               <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-700/30 flex flex-col justify-between relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-1 opacity-10 group-hover:opacity-20 transition"><TrendingUp size={40}/></div>
+                    <div className="text-slate-500 text-[10px] mb-1">总收益率</div>
+                    <div className={`text-xl font-bold ${Number(results.metrics.totalReturn) >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                      {Number(results.metrics.totalReturn) > 0 ? '+' : ''}{results.metrics.totalReturn}%
+                    </div>
+                  </div>
+                  
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-700/30 flex flex-col justify-between relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-1 opacity-10 group-hover:opacity-20 transition"><TrendingDown size={40}/></div>
+                    <div className="text-slate-500 text-[10px] mb-1">最大回撤</div>
+                    <div className="text-lg font-bold text-slate-200">{results.metrics.maxDrawdown}%</div>
+                  </div>
+
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-700/30 flex flex-col justify-between">
+                    <div className="text-slate-500 text-[10px] mb-1">胜率</div>
+                    <div className="text-lg font-bold text-slate-200">{results.metrics.winRate}%</div>
+                  </div>
+
+                  <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-700/30 flex flex-col justify-between">
+                    <div className="text-slate-500 text-[10px] mb-1">最终资产</div>
+                    <div className="text-lg font-bold text-blue-400">¥{(results.metrics.finalEquity / 10000).toFixed(1)}w</div>
+                  </div>
+               </div>
+            </div>
+          )}
         </div>
 
         {/* 右侧：图表 */}
@@ -456,7 +547,8 @@ export default function QuantBacktestPlatform() {
               </div>
               <div className="text-xs text-slate-500 flex items-center gap-2 px-2">
                 {dataMode === 'mock' && <><WifiOff size={14} className="text-orange-500"/><span className="text-orange-400">模拟模式</span></>}
-                {dataMode === 'real' && <><Wifi size={14} className="text-blue-500"/><span>真实连接 (Tushare)</span></>}
+                {dataMode === 'tushare' && <><Wifi size={14} className="text-blue-500"/><span>Tushare API</span></>}
+                {dataMode === 'baostock' && <><Wifi size={14} className="text-purple-500"/><span>Baostock</span></>}
                 {dataMode === 'manual' && <><FileJson size={14} className="text-green-500"/><span className="text-green-400">手动导入模式</span></>}
               </div>
             </div>
