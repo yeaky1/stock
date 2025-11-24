@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Scatter } from 'recharts';
-import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson, Database, BarChart2, TrendingUp, TrendingDown, Zap } from 'lucide-react';
+import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson, Database, BarChart2, TrendingUp, TrendingDown, Zap, PlusCircle } from 'lucide-react';
 
 // --- A股 股票代码映射 ---
 const STOCK_PROFILES = {
@@ -52,9 +52,9 @@ const copyToClipboard = (text) => {
 };
 
 // --- Tushare API 调用 ---
-const fetchTushareData = async (token, ticker, startDate, endDate) => {
-  const profile = STOCK_PROFILES[ticker];
-  if (!profile) throw new Error("未找到股票代码配置");
+const fetchTushareData = async (token, tsCode, startDate, endDate) => {
+  // 注意：这里不再依赖 STOCK_PROFILES 查找，而是直接使用传入的 tsCode
+  if (!tsCode) throw new Error("股票代码无效");
 
   const start = startDate.replace(/-/g, '');
   const end = endDate.replace(/-/g, '');
@@ -66,7 +66,7 @@ const fetchTushareData = async (token, ticker, startDate, endDate) => {
       body: JSON.stringify({
         api_name: 'daily',
         token: token,
-        params: { ts_code: profile.ts_code, start_date: start, end_date: end },
+        params: { ts_code: tsCode, start_date: start, end_date: end },
         fields: 'trade_date,open,close,high,low,vol'
       })
     });
@@ -94,10 +94,23 @@ const fetchTushareData = async (token, ticker, startDate, endDate) => {
 };
 
 // --- 确定性模拟数据生成器 ---
-const generateMockData = (ticker, startDateStr, endDateStr) => {
-  const profile = STOCK_PROFILES[ticker] || STOCK_PROFILES['600519'];
-  const seed = stringToSeed(ticker + "2024"); 
+const generateMockData = (tickerCode, startDateStr, endDateStr) => {
+  // 尝试获取预设配置，如果没有则根据 tickerCode 动态生成配置
+  // 这样自定义的股票代码也会有固定的随机走势
+  let profile = STOCK_PROFILES[Object.keys(STOCK_PROFILES).find(k => STOCK_PROFILES[k].ts_code === tickerCode)];
+  
+  const seed = stringToSeed(tickerCode + "2024"); 
   const random = seededRandom(seed);
+
+  if (!profile) {
+    // 为自定义股票生成随机特征
+    profile = {
+      startPrice: 10 + (random() * 200), // 随机初始价 10-210
+      volatility: 0.015 + (random() * 0.03), // 随机波动率
+      trend: (random() - 0.5) * 0.002 // 随机趋势
+    };
+  }
+
   let price = profile.startPrice;
   const data = [];
   const start = new Date(startDateStr);
@@ -132,7 +145,7 @@ const generateMockData = (ticker, startDateStr, endDateStr) => {
   return data;
 };
 
-// --- 指标计算与回测 ---
+// --- 指标计算与回测 (保持不变) ---
 const calculateBollingerBands = (data, window = 20, multiplier = 2) => {
   return data.map((item, index) => {
     if (index < window - 1) return { ...item, mb: null, ub: null, lb: null };
@@ -205,12 +218,12 @@ const runBacktest = (data, initialCapital, period, multiplier, startDateStr) => 
   };
 };
 
-// --- 组件 ---
 const BuyMarker = ({ cx, cy }) => Number.isFinite(cx) && Number.isFinite(cy) ? <g transform={`translate(${cx},${cy})`}><polygon points="0,-8 -6,4 6,4" fill="#ef4444" /><text x="0" y="14" textAnchor="middle" fill="#ef4444" fontSize="10" fontWeight="bold">买</text></g> : null;
 const SellMarker = ({ cx, cy }) => Number.isFinite(cx) && Number.isFinite(cy) ? <g transform={`translate(${cx},${cy})`}><polygon points="0,8 -6,-4 6,-4" fill="#22c55e" /><text x="0" y="-10" textAnchor="middle" fill="#22c55e" fontSize="10" fontWeight="bold">卖</text></g> : null;
 
 export default function QuantBacktestPlatform() {
-  const [selectedStock, setSelectedStock] = useState('600519');
+  const [selectedStock, setSelectedStock] = useState('600519'); // 下拉框的 value
+  const [customCode, setCustomCode] = useState('600000.SH'); // 自定义输入的代码
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2023-12-31');
   const [initialCapital, setInitialCapital] = useState(500000);
@@ -231,11 +244,30 @@ export default function QuantBacktestPlatform() {
 
   useEffect(() => { runSimulation(); }, []);
 
-  // 动态生成脚本
-  const tushareScript = `import tushare as ts\nimport json\n\ntoken = '${apiToken}'\npro = ts.pro_api(token)\ndf = pro.daily(ts_code='${STOCK_PROFILES[selectedStock].ts_code}', start_date='${startDate.replace(/-/g,'')}', end_date='${endDate.replace(/-/g,'')}')\ndata = []\nfor index, row in df.iterrows():\n    data.append({\n        "date": row['trade_date'][:4] + '-' + row['trade_date'][4:6] + '-' + row['trade_date'][6:],\n        "open": row['open'], "close": row['close'],\n        "high": row['high'], "low": row['low'], "volume": row['vol']\n    })\ndata.reverse()\nprint(json.dumps(data))`;
+  // 获取当前使用的 股票代码 (TS Code)
+  const getCurrentTsCode = () => {
+    if (selectedStock === 'custom') {
+      return customCode.toUpperCase();
+    }
+    return STOCK_PROFILES[selectedStock].ts_code;
+  };
 
-  const bsCode = STOCK_PROFILES[selectedStock].ts_code.split('.').reverse().join('.').toLowerCase(); 
-  const baostockScript = `import baostock as bs\nimport pandas as pd\nimport json\nlg = bs.login()\nrs = bs.query_history_k_data_plus("${bsCode}", "date,open,high,low,close,volume", start_date='${startDate}', end_date='${endDate}', frequency="d", adjustflag="3")\ndata_list = []\nwhile (rs.error_code == '0') & rs.next():\n    row = rs.get_row_data()\n    data_list.append({ "date": row[0], "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]) })\nbs.logout()\nprint(json.dumps(data_list))`;
+  // 动态生成脚本
+  const getTsCodeForScript = () => getCurrentTsCode();
+  
+  const tushareScript = `import tushare as ts\nimport json\n\ntoken = '${apiToken}'\npro = ts.pro_api(token)\ndf = pro.daily(ts_code='${getTsCodeForScript()}', start_date='${startDate.replace(/-/g,'')}', end_date='${endDate.replace(/-/g,'')}')\ndata = []\nfor index, row in df.iterrows():\n    data.append({\n        "date": row['trade_date'][:4] + '-' + row['trade_date'][4:6] + '-' + row['trade_date'][6:],\n        "open": row['open'], "close": row['close'],\n        "high": row['high'], "low": row['low'], "volume": row['vol']\n    })\ndata.reverse()\nprint(json.dumps(data))`;
+
+  const getBsCodeForScript = () => {
+    const tsCode = getCurrentTsCode();
+    // 简单转换：600519.SH -> sh.600519
+    const parts = tsCode.split('.');
+    if (parts.length === 2) {
+      return parts[1].toLowerCase() + '.' + parts[0];
+    }
+    return tsCode; // Fallback
+  };
+
+  const baostockScript = `import baostock as bs\nimport pandas as pd\nimport json\nlg = bs.login()\nrs = bs.query_history_k_data_plus("${getBsCodeForScript()}", "date,open,high,low,close,volume", start_date='${startDate}', end_date='${endDate}', frequency="d", adjustflag="3")\ndata_list = []\nwhile (rs.error_code == '0') & rs.next():\n    row = rs.get_row_data()\n    data_list.append({ "date": row[0], "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]) })\nbs.logout()\nprint(json.dumps(data_list))`;
 
   const handleCopy = () => {
       const text = dataMode === 'baostock' ? baostockScript : tushareScript;
@@ -249,6 +281,7 @@ export default function QuantBacktestPlatform() {
     setErrorMsg('');
     setResults(null);
     let marketData = [];
+    const targetCode = getCurrentTsCode();
 
     try {
       if (dataMode === 'manual') {
@@ -259,7 +292,7 @@ export default function QuantBacktestPlatform() {
       } 
       else if (dataMode === 'tushare') {
         try {
-          marketData = await fetchTushareData(apiToken, selectedStock, startDate, endDate);
+          marketData = await fetchTushareData(apiToken, targetCode, startDate, endDate);
         } catch (err) {
           if (err.message === 'CORS_BLOCK') {
             setShowDataHelper(true);
@@ -278,7 +311,8 @@ export default function QuantBacktestPlatform() {
         return;
       }
       else {
-        marketData = generateMockData(selectedStock, startDate, endDate);
+        // 模拟数据：传入 TS Code 作为种子
+        marketData = generateMockData(targetCode, startDate, endDate);
       }
 
       if (!marketData || marketData.length === 0) throw new Error("数据为空");
@@ -302,7 +336,7 @@ export default function QuantBacktestPlatform() {
   return (
     <div className="w-full min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-8 flex flex-col gap-6 relative">
       
-      {/* Modal 代码省略，与之前相同 */}
+      {/* Modal ... */}
       {showDataHelper && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-slate-800 rounded-xl border border-slate-600 w-full max-w-3xl shadow-2xl flex flex-col max-h-[90vh]">
@@ -316,7 +350,7 @@ export default function QuantBacktestPlatform() {
             <div className="p-6 overflow-y-auto space-y-6">
               <p className="text-slate-300 text-sm">
                 {dataMode === 'baostock' 
-                  ? "Baostock (证券宝) 是纯 Python 库，不支持浏览器直接访问。请运行以下脚本获取数据。"
+                  ? `当前目标代码：${getBsCodeForScript()}。请运行以下 Python 脚本获取数据。`
                   : "这是浏览器的安全机制（CORS）拦截了请求。Tushare服务器不允许网页直接访问。"}
               </p>
               <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700">
@@ -366,7 +400,7 @@ export default function QuantBacktestPlatform() {
           <p className="text-slate-400 text-sm mt-1 flex items-center gap-1">
             <span className="bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded text-xs border border-blue-800">布林带策略</span>
             <span className="text-slate-500">|</span>
-            {STOCK_PROFILES[selectedStock].name} ({STOCK_PROFILES[selectedStock].ts_code})
+            {selectedStock === 'custom' ? customCode : `${STOCK_PROFILES[selectedStock].name} (${STOCK_PROFILES[selectedStock].ts_code})`}
           </p>
         </div>
         <div className="flex gap-3 w-full md:w-auto">
@@ -452,11 +486,33 @@ export default function QuantBacktestPlatform() {
             <div className="space-y-4">
               <div>
                 <label className="block text-slate-400 text-xs mb-1.5 font-bold">选择股票</label>
-                <select value={selectedStock} onChange={(e) => setSelectedStock(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                <select 
+                  value={selectedStock} 
+                  onChange={(e) => setSelectedStock(e.target.value)} 
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2.5 px-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-2"
+                >
                   {Object.entries(STOCK_PROFILES).map(([code, info]) => (
                     <option key={code} value={code}>{code} - {info.name}</option>
                   ))}
+                  <option value="custom">-- 自定义代码 --</option>
                 </select>
+                
+                {/* 自定义代码输入框 */}
+                {selectedStock === 'custom' && (
+                  <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="block text-blue-400 text-[10px] mb-1 ml-1">请输入代码 (如 600000.SH)</label>
+                    <div className="relative">
+                      <PlusCircle size={14} className="absolute left-2 top-2.5 text-slate-500" />
+                      <input 
+                        type="text" 
+                        value={customCode} 
+                        onChange={(e) => setCustomCode(e.target.value)} 
+                        placeholder="例如 000001.SZ"
+                        className="w-full bg-slate-800 border border-blue-500/50 rounded-lg py-2 pl-8 pr-2 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -471,7 +527,7 @@ export default function QuantBacktestPlatform() {
             </div>
           </div>
 
-          {/* 3. 策略参数 (已恢复) */}
+          {/* 3. 策略参数 */}
           <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
              <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
               <Settings size={16} /> 策略参数
@@ -501,7 +557,7 @@ export default function QuantBacktestPlatform() {
             </div>
           </div>
 
-          {/* 4. 回测绩效面板 (已恢复并美化) */}
+          {/* 4. 回测绩效面板 */}
           {results && (
              <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg animate-in fade-in slide-in-from-bottom-4 duration-500">
                <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
