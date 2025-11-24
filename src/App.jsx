@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Scatter } from 'recharts';
-import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson, Database, BarChart2, TrendingUp, TrendingDown, Zap, PlusCircle } from 'lucide-react';
+import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, ChevronDown, Wifi, WifiOff, Loader2, AlertCircle, Terminal, Clipboard, FileJson, Database, BarChart2, TrendingUp, TrendingDown, Zap, PlusCircle, Layers } from 'lucide-react';
 
 // --- A股 股票代码映射 ---
 const STOCK_PROFILES = {
@@ -53,9 +53,7 @@ const copyToClipboard = (text) => {
 
 // --- Tushare API 调用 ---
 const fetchTushareData = async (token, tsCode, startDate, endDate) => {
-  // 注意：这里不再依赖 STOCK_PROFILES 查找，而是直接使用传入的 tsCode
   if (!tsCode) throw new Error("股票代码无效");
-
   const start = startDate.replace(/-/g, '');
   const end = endDate.replace(/-/g, '');
 
@@ -95,19 +93,15 @@ const fetchTushareData = async (token, tsCode, startDate, endDate) => {
 
 // --- 确定性模拟数据生成器 ---
 const generateMockData = (tickerCode, startDateStr, endDateStr) => {
-  // 尝试获取预设配置，如果没有则根据 tickerCode 动态生成配置
-  // 这样自定义的股票代码也会有固定的随机走势
   let profile = STOCK_PROFILES[Object.keys(STOCK_PROFILES).find(k => STOCK_PROFILES[k].ts_code === tickerCode)];
-  
   const seed = stringToSeed(tickerCode + "2024"); 
   const random = seededRandom(seed);
 
   if (!profile) {
-    // 为自定义股票生成随机特征
     profile = {
-      startPrice: 10 + (random() * 200), // 随机初始价 10-210
-      volatility: 0.015 + (random() * 0.03), // 随机波动率
-      trend: (random() - 0.5) * 0.002 // 随机趋势
+      startPrice: 10 + (random() * 200),
+      volatility: 0.015 + (random() * 0.03),
+      trend: (random() - 0.5) * 0.002
     };
   }
 
@@ -145,7 +139,7 @@ const generateMockData = (tickerCode, startDateStr, endDateStr) => {
   return data;
 };
 
-// --- 指标计算与回测 (保持不变) ---
+// --- 指标计算：布林带 ---
 const calculateBollingerBands = (data, window = 20, multiplier = 2) => {
   return data.map((item, index) => {
     if (index < window - 1) return { ...item, mb: null, ub: null, lb: null };
@@ -159,9 +153,48 @@ const calculateBollingerBands = (data, window = 20, multiplier = 2) => {
   });
 };
 
-const runBacktest = (data, initialCapital, period, multiplier, startDateStr) => {
-  const fullData = calculateBollingerBands(data, period, multiplier);
-  const validData = fullData.filter(d => d.date >= startDateStr);
+// --- 指标计算：MACD ---
+const calculateMACD = (data, short = 12, long = 26, mid = 9) => {
+  let emaShort = 0;
+  let emaLong = 0;
+  let dea = 0;
+
+  return data.map((item, index) => {
+    const close = item.close;
+    
+    if (index === 0) {
+      emaShort = close;
+      emaLong = close;
+      dea = 0;
+      return { ...item, diff: 0, dea: 0, macd: 0 };
+    }
+
+    // EMA 计算公式: EMA_today = (Price * 2 / (N + 1)) + (EMA_yesterday * (N - 1) / (N + 1))
+    emaShort = (close * 2 / (short + 1)) + (emaShort * (short - 1) / (short + 1));
+    emaLong = (close * 2 / (long + 1)) + (emaLong * (long - 1) / (long + 1));
+    
+    const diff = emaShort - emaLong;
+    dea = (diff * 2 / (mid + 1)) + (dea * (mid - 1) / (mid + 1));
+    const macd = (diff - dea) * 2;
+
+    return { ...item, diff, dea, macd };
+  });
+};
+
+// --- 回测核心引擎 ---
+const runBacktest = (data, initialCapital, strategyConfig, startDateStr) => {
+  let processedData = [];
+  
+  // 1. 根据策略类型计算指标
+  if (strategyConfig.type === 'BOLL') {
+    processedData = calculateBollingerBands(data, strategyConfig.period, strategyConfig.multiplier);
+  } else if (strategyConfig.type === 'MACD') {
+    processedData = calculateMACD(data, strategyConfig.short, strategyConfig.long, strategyConfig.signal);
+  }
+
+  // 2. 过滤日期
+  const validData = processedData.filter(d => d.date >= startDateStr);
+  
   let cash = initialCapital;
   let shares = 0;
   const trades = [];
@@ -169,27 +202,43 @@ const runBacktest = (data, initialCapital, period, multiplier, startDateStr) => 
   let winCount = 0;
   let totalTrades = 0;
 
-  for (let i = 0; i < validData.length; i++) {
+  for (let i = 1; i < validData.length; i++) {
     const today = validData[i];
-    if (!today.lb || !today.ub) {
-      equityCurve.push({ ...today, equity: cash + (shares * today.close), action: null, buySignal: null, sellSignal: null });
-      continue;
-    }
-    let action = null;
+    const prev = validData[i - 1];
     const price = today.close;
-    let buySignalVal = null;
-    let sellSignalVal = null;
-    const isBuySignal = price <= today.lb;
-    const isSellSignal = price >= today.ub;
+    let action = null;
+    let reason = '';
 
+    // --- 策略信号逻辑 ---
+    let isBuySignal = false;
+    let isSellSignal = false;
+
+    if (strategyConfig.type === 'BOLL') {
+      // 布林带：跌破下轨买入，突破上轨卖出 (均值回归)
+      // 需确保指标已计算
+      if (today.lb && today.ub) {
+        if (price <= today.lb) { isBuySignal = true; reason = `股价(${price}) 触及下轨`; }
+        else if (price >= today.ub) { isSellSignal = true; reason = `股价(${price}) 触及上轨`; }
+      }
+    } else if (strategyConfig.type === 'MACD') {
+      // MACD：金叉买入，死叉卖出 (趋势跟踪)
+      // 金叉：DIF 上穿 DEA
+      // 死叉：DIF 下穿 DEA
+      const isGoldenCross = prev.diff <= prev.dea && today.diff > today.dea;
+      const isDeathCross = prev.diff >= prev.dea && today.diff < today.dea;
+      
+      if (isGoldenCross) { isBuySignal = true; reason = `MACD金叉 (DIF上穿DEA)`; }
+      else if (isDeathCross) { isSellSignal = true; reason = `MACD死叉 (DIF下穿DEA)`; }
+    }
+
+    // --- 交易执行 (全仓买卖，T+1简化) ---
     if (isBuySignal && cash > price * 100) {
       const buyAmount = Math.floor(cash / (price * 100)) * 100;
       if (buyAmount > 0) {
         shares += buyAmount;
         cash -= buyAmount * price;
         action = 'buy';
-        buySignalVal = price;
-        trades.push({ date: today.date, type: '买入', price: price, shares: buyAmount, reason: `股价(${price}) 触及下轨` });
+        trades.push({ date: today.date, type: '买入', price: price, shares: buyAmount, reason: reason });
       }
     } else if (isSellSignal && shares > 0) {
       const sellAmount = shares;
@@ -199,11 +248,17 @@ const runBacktest = (data, initialCapital, period, multiplier, startDateStr) => 
       cash += sellAmount * price;
       shares = 0;
       action = 'sell';
-      sellSignalVal = price;
-      trades.push({ date: today.date, type: '卖出', price: price, shares: sellAmount, reason: `股价(${price}) 触及上轨` });
+      trades.push({ date: today.date, type: '卖出', price: price, shares: sellAmount, reason: reason });
     }
+
     const totalEquity = cash + (shares * price);
-    equityCurve.push({ ...today, equity: totalEquity, action: action, buySignal: buySignalVal, sellSignal: sellSignalVal });
+    
+    // 为了绘图方便，把 buySignal/sellSignal 价格点也存入 today 数据
+    const point = { ...today, equity: totalEquity, action: action };
+    if (action === 'buy') point.buySignal = price;
+    if (action === 'sell') point.sellSignal = price;
+    
+    equityCurve.push(point);
   }
 
   const finalEquity = equityCurve[equityCurve.length - 1]?.equity || initialCapital;
@@ -222,13 +277,24 @@ const BuyMarker = ({ cx, cy }) => Number.isFinite(cx) && Number.isFinite(cy) ? <
 const SellMarker = ({ cx, cy }) => Number.isFinite(cx) && Number.isFinite(cy) ? <g transform={`translate(${cx},${cy})`}><polygon points="0,8 -6,-4 6,-4" fill="#22c55e" /><text x="0" y="-10" textAnchor="middle" fill="#22c55e" fontSize="10" fontWeight="bold">卖</text></g> : null;
 
 export default function QuantBacktestPlatform() {
-  const [selectedStock, setSelectedStock] = useState('600519'); // 下拉框的 value
-  const [customCode, setCustomCode] = useState('600000.SH'); // 自定义输入的代码
+  const [selectedStock, setSelectedStock] = useState('600519');
+  const [customCode, setCustomCode] = useState('600000.SH');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2023-12-31');
   const [initialCapital, setInitialCapital] = useState(500000);
+  
+  // 策略状态
+  const [strategyType, setStrategyType] = useState('BOLL'); // 'BOLL' or 'MACD'
+  
+  // BOLL 参数
   const [bollingerPeriod, setBollingerPeriod] = useState(20);
   const [bollingerMultiplier, setBollingerMultiplier] = useState(2);
+  
+  // MACD 参数
+  const [macdShort, setMacdShort] = useState(12);
+  const [macdLong, setMacdLong] = useState(26);
+  const [macdSignal, setMacdSignal] = useState(9);
+
   const [results, setResults] = useState(null);
   const [activeTab, setActiveTab] = useState('chart');
   const [showStrategyInfo, setShowStrategyInfo] = useState(false);
@@ -244,7 +310,7 @@ export default function QuantBacktestPlatform() {
 
   useEffect(() => { runSimulation(); }, []);
 
-  // 获取当前使用的 股票代码 (TS Code)
+  // 获取当前使用的 股票代码
   const getCurrentTsCode = () => {
     if (selectedStock === 'custom') {
       return customCode.toUpperCase();
@@ -252,19 +318,16 @@ export default function QuantBacktestPlatform() {
     return STOCK_PROFILES[selectedStock].ts_code;
   };
 
-  // 动态生成脚本
   const getTsCodeForScript = () => getCurrentTsCode();
-  
   const tushareScript = `import tushare as ts\nimport json\n\ntoken = '${apiToken}'\npro = ts.pro_api(token)\ndf = pro.daily(ts_code='${getTsCodeForScript()}', start_date='${startDate.replace(/-/g,'')}', end_date='${endDate.replace(/-/g,'')}')\ndata = []\nfor index, row in df.iterrows():\n    data.append({\n        "date": row['trade_date'][:4] + '-' + row['trade_date'][4:6] + '-' + row['trade_date'][6:],\n        "open": row['open'], "close": row['close'],\n        "high": row['high'], "low": row['low'], "volume": row['vol']\n    })\ndata.reverse()\nprint(json.dumps(data))`;
 
   const getBsCodeForScript = () => {
     const tsCode = getCurrentTsCode();
-    // 简单转换：600519.SH -> sh.600519
     const parts = tsCode.split('.');
     if (parts.length === 2) {
       return parts[1].toLowerCase() + '.' + parts[0];
     }
-    return tsCode; // Fallback
+    return tsCode; 
   };
 
   const baostockScript = `import baostock as bs\nimport pandas as pd\nimport json\nlg = bs.login()\nrs = bs.query_history_k_data_plus("${getBsCodeForScript()}", "date,open,high,low,close,volume", start_date='${startDate}', end_date='${endDate}', frequency="d", adjustflag="3")\ndata_list = []\nwhile (rs.error_code == '0') & rs.next():\n    row = rs.get_row_data()\n    data_list.append({ "date": row[0], "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]) })\nbs.logout()\nprint(json.dumps(data_list))`;
@@ -311,12 +374,24 @@ export default function QuantBacktestPlatform() {
         return;
       }
       else {
-        // 模拟数据：传入 TS Code 作为种子
         marketData = generateMockData(targetCode, startDate, endDate);
       }
 
       if (!marketData || marketData.length === 0) throw new Error("数据为空");
-      const res = runBacktest(marketData, initialCapital, bollingerPeriod, bollingerMultiplier, startDate);
+      
+      // 构建策略配置对象
+      const strategyConfig = {
+        type: strategyType,
+        // BOLL params
+        period: bollingerPeriod,
+        multiplier: bollingerMultiplier,
+        // MACD params
+        short: macdShort,
+        long: macdLong,
+        signal: macdSignal
+      };
+
+      const res = runBacktest(marketData, initialCapital, strategyConfig, startDate);
       setResults(res);
     } catch (err) {
       setErrorMsg(err.message);
@@ -398,7 +473,7 @@ export default function QuantBacktestPlatform() {
             AlphaQuant Pro
           </h1>
           <p className="text-slate-400 text-sm mt-1 flex items-center gap-1">
-            <span className="bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded text-xs border border-blue-800">布林带策略</span>
+            <span className="bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded text-xs border border-blue-800">{strategyType === 'BOLL' ? '布林带策略' : 'MACD策略'}</span>
             <span className="text-slate-500">|</span>
             {selectedStock === 'custom' ? customCode : `${STOCK_PROFILES[selectedStock].name} (${STOCK_PROFILES[selectedStock].ts_code})`}
           </p>
@@ -497,7 +572,6 @@ export default function QuantBacktestPlatform() {
                   <option value="custom">-- 自定义代码 --</option>
                 </select>
                 
-                {/* 自定义代码输入框 */}
                 {selectedStock === 'custom' && (
                   <div className="animate-in fade-in slide-in-from-top-2 duration-300">
                     <label className="block text-blue-400 text-[10px] mb-1 ml-1">请输入代码 (如 600000.SH)</label>
@@ -527,27 +601,72 @@ export default function QuantBacktestPlatform() {
             </div>
           </div>
 
-          {/* 3. 策略参数 */}
+          {/* 3. 策略参数 (动态变化) */}
           <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
              <h2 className="flex items-center gap-2 font-semibold text-base mb-4 text-slate-200 border-b border-slate-700 pb-2">
-              <Settings size={16} /> 策略参数
+              <Layers size={16} /> 策略模型
             </h2>
             <div className="space-y-5">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <label className="text-slate-400 text-xs">周期 (Window)</label>
-                  <span className="text-blue-400 text-xs font-mono">{bollingerPeriod}日</span>
-                </div>
-                <input type="range" min="5" max="60" step="1" value={bollingerPeriod} onChange={(e) => setBollingerPeriod(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+              {/* 策略选择器 */}
+              <div className="flex bg-slate-900 p-1 rounded-lg mb-4">
+                <button 
+                  onClick={() => setStrategyType('BOLL')}
+                  className={`flex-1 py-2 text-xs font-medium rounded-md transition ${strategyType === 'BOLL' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                >
+                  布林带 (均值回归)
+                </button>
+                <button 
+                  onClick={() => setStrategyType('MACD')}
+                  className={`flex-1 py-2 text-xs font-medium rounded-md transition ${strategyType === 'MACD' ? 'bg-purple-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                >
+                  MACD (趋势跟踪)
+                </button>
               </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <label className="text-slate-400 text-xs">标准差倍数 (StdDev)</label>
-                  <span className="text-orange-400 text-xs font-mono">{bollingerMultiplier}x</span>
+
+              {strategyType === 'BOLL' ? (
+                <div className="animate-in fade-in duration-300 space-y-4">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-slate-400 text-xs">周期 (Window)</label>
+                      <span className="text-blue-400 text-xs font-mono">{bollingerPeriod}日</span>
+                    </div>
+                    <input type="range" min="5" max="60" step="1" value={bollingerPeriod} onChange={(e) => setBollingerPeriod(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-slate-400 text-xs">标准差 (StdDev)</label>
+                      <span className="text-orange-400 text-xs font-mono">{bollingerMultiplier}x</span>
+                    </div>
+                    <input type="range" min="1" max="4" step="0.1" value={bollingerMultiplier} onChange={(e) => setBollingerMultiplier(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-orange-500" />
+                  </div>
                 </div>
-                <input type="range" min="1" max="4" step="0.1" value={bollingerMultiplier} onChange={(e) => setBollingerMultiplier(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-orange-500" />
-              </div>
-              <div>
+              ) : (
+                <div className="animate-in fade-in duration-300 space-y-4">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-slate-400 text-xs">快线周期 (Short)</label>
+                      <span className="text-purple-400 text-xs font-mono">{macdShort}日</span>
+                    </div>
+                    <input type="range" min="5" max="20" step="1" value={macdShort} onChange={(e) => setMacdShort(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-slate-400 text-xs">慢线周期 (Long)</label>
+                      <span className="text-purple-400 text-xs font-mono">{macdLong}日</span>
+                    </div>
+                    <input type="range" min="20" max="60" step="1" value={macdLong} onChange={(e) => setMacdLong(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-slate-400 text-xs">信号周期 (Signal)</label>
+                      <span className="text-orange-400 text-xs font-mono">{macdSignal}日</span>
+                    </div>
+                    <input type="range" min="5" max="20" step="1" value={macdSignal} onChange={(e) => setMacdSignal(Number(e.target.value))} className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-orange-500" />
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 border-t border-slate-700/50">
                 <label className="block text-slate-400 text-xs mb-1.5">初始资金</label>
                 <div className="relative">
                   <DollarSign size={12} className="absolute left-3 top-3 text-slate-500" />
@@ -597,7 +716,7 @@ export default function QuantBacktestPlatform() {
           <div className="bg-slate-800 p-1 rounded-xl border border-slate-700 shadow-xl min-h-[500px] flex flex-col">
              <div className="flex gap-2 p-3 border-b border-slate-700/50 justify-between items-center">
               <div className="flex gap-2">
-                <button onClick={() => setActiveTab('chart')} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'chart' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-700/50'}`}>K线</button>
+                <button onClick={() => setActiveTab('chart')} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'chart' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-700/50'}`}>K线与指标</button>
                 <button onClick={() => setActiveTab('equity')} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'equity' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-700/50'}`}>收益曲线</button>
                 <button onClick={() => setActiveTab('trades')} className={`px-4 py-1.5 rounded-lg text-sm font-medium transition ${activeTab === 'trades' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-700/50'}`}>交易明细</button>
               </div>
@@ -626,10 +745,21 @@ export default function QuantBacktestPlatform() {
                       <YAxis domain={['auto', 'auto']} tick={{fill: '#64748b', fontSize: 11}} width={50} />
                       <Tooltip contentStyle={{backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', fontSize: '12px'}} />
                       <Legend iconType="plainline" />
-                      <Line type="monotone" dataKey="ub" stroke="#ef4444" strokeDasharray="3 3" dot={false} strokeWidth={1} name="上轨" />
-                      <Line type="monotone" dataKey="lb" stroke="#22c55e" strokeDasharray="3 3" dot={false} strokeWidth={1} name="下轨" />
-                      <Line type="monotone" dataKey="mb" stroke="#fbbf24" dot={false} strokeWidth={1} name="中轨" />
+                      
+                      {/* 股价线 (始终显示) */}
                       <Line type="monotone" dataKey="close" stroke="#f8fafc" dot={false} strokeWidth={1.5} name="股价" />
+
+                      {/* 根据策略显示不同的辅助线 */}
+                      {strategyType === 'BOLL' && (
+                        <>
+                          <Line type="monotone" dataKey="ub" stroke="#ef4444" strokeDasharray="3 3" dot={false} strokeWidth={1} name="上轨" />
+                          <Line type="monotone" dataKey="lb" stroke="#22c55e" strokeDasharray="3 3" dot={false} strokeWidth={1} name="下轨" />
+                          <Line type="monotone" dataKey="mb" stroke="#fbbf24" dot={false} strokeWidth={1} name="中轨" />
+                        </>
+                      )}
+                      {/* MACD 策略下，一般不在主图画快慢线，因为值域差别太大。这里只显示买卖点即可，或者可以画简单的趋势线。为保持简洁，暂不画DIF/DEA在主图 */}
+
+                      {/* 买卖点标记 (通用) */}
                       <Scatter name="买入点" dataKey="buySignal" shape={<BuyMarker />} legendType="triangle" fill="#ef4444" />
                       <Scatter name="卖出点" dataKey="sellSignal" shape={<SellMarker />} legendType="triangle" fill="#22c55e" />
                     </ComposedChart>
@@ -678,12 +808,32 @@ export default function QuantBacktestPlatform() {
         </div>
       </div>
       
-      {/* 策略说明 Modal */}
+      {/* 策略说明 Modal (动态内容) */}
       {showStrategyInfo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-2xl shadow-2xl p-6">
-            <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold text-white">策略说明</h2><button onClick={() => setShowStrategyInfo(false)}><X className="text-slate-400 hover:text-white"/></button></div>
-            <p className="text-slate-300 text-sm">股价触及布林带下轨买入，触及上轨卖出。</p>
+            <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold text-white">策略说明: {strategyType === 'BOLL' ? '布林带均值回归' : 'MACD 趋势跟踪'}</h2><button onClick={() => setShowStrategyInfo(false)}><X className="text-slate-400 hover:text-white"/></button></div>
+            <div className="text-slate-300 text-sm space-y-4">
+              {strategyType === 'BOLL' ? (
+                <>
+                  <p><strong>核心逻辑：</strong> 低买高卖。假设股价会在一定区间内震荡。</p>
+                  <ul className="list-disc list-inside space-y-1 text-slate-400">
+                    <li><strong>买入条件：</strong> 股价跌破下轨 (Lower Band)，视为超卖。</li>
+                    <li><strong>卖出条件：</strong> 股价突破上轨 (Upper Band)，视为超买。</li>
+                    <li><strong>适用行情：</strong> 震荡市、箱体整理。</li>
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <p><strong>核心逻辑：</strong> 追涨杀跌。跟随市场的主要趋势。</p>
+                  <ul className="list-disc list-inside space-y-1 text-slate-400">
+                    <li><strong>买入条件 (金叉)：</strong> DIF 快线上穿 DEA 慢线，视为上升趋势确立。</li>
+                    <li><strong>卖出条件 (死叉)：</strong> DIF 快线下穿 DEA 慢线，视为下降趋势开始。</li>
+                    <li><strong>适用行情：</strong> 单边牛市、单边熊市、大波段行情。</li>
+                  </ul>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
