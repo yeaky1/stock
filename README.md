@@ -111,5 +111,5 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ---
 
 <div align="center">
-  <p>Built with ❤️ by <a href="https://github.com/your-username">Your Name</a></p>
+  <p>Built with ❤️ 
 </div>
