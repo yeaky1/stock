@@ -5,7 +5,10 @@
 ![Recharts](https://img.shields.io/badge/Visualization-Recharts-orange?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-**AlphaQuant Pro** （"https://stock-opal-seven.vercel.app/"）is a modern, interactive backtesting engine for the A-Share market, built with React. 
+Website:
+https://stock-opal-seven.vercel.app/
+
+**AlphaQuant Pro** is a modern, interactive backtesting engine for the A-Share market, built with React. 
 
 It provides a professional dashboard to visualize historical data, simulate trading strategies (MACD & Bollinger Bands), and analyze performance metrics. The platform features a unique data handling system that supports direct API connections, deterministic simulations, and a local Python bridge to bypass browser CORS restrictions.
 
