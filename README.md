@@ -1,4 +1,4 @@
-# 📈 AlphaQuant Pro - A-Share Quantitative Backtesting Platform
+# 📈 AlphaQuant Pro（https://stock-opal-seven.vercel.app/） - A-Share Quantitative Backtesting Platform
 
 ![React](https://img.shields.io/badge/React-18.0-blue?style=flat-square&logo=react)
 ![TailwindCSS](https://img.shields.io/badge/TailwindCSS-3.0-38bdf8?style=flat-square&logo=tailwindcss)
