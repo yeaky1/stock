@@ -6,8 +6,10 @@ import { Play, Activity, DollarSign, Settings, Search, BookOpen, X, ChevronUp, C
 const STOCK_PROFILES = {
   '600519': { name: '贵州茅台', ts_code: '600519.SH', startPrice: 1800, volatility: 0.015, trend: 0.0002 },
   '300750': { name: '宁德时代', ts_code: '300750.SZ', startPrice: 200, volatility: 0.035, trend: 0.0005 },
-  '000001': { name: '平安银行', ts_code: '000001.SZ', startPrice: 15, volatility: 0.02, trend: 0.0001 },
-  '601127': { name: '赛力斯', ts_code: '601127.SH', startPrice: 80, volatility: 0.05, trend: 0.001 },
+  '601398': { name: '工商银行', ts_code: '601398.SH', startPrice: 5, volatility: 0.01, trend: 0.00005 },
+  '000063': { name: '中兴通讯', ts_code: '000063.SZ', startPrice: 30, volatility: 0.025, trend: 0.0003 },
+  '603259': { name: '药明康德', ts_code: '603259.SH', startPrice: 80, volatility: 0.03, trend: 0.0004 },
+  'NVDA': { name: '英伟达', ts_code: 'NVDA.US', startPrice: 500, volatility: 0.04, trend: 0.001 },
 };
 
 // --- 辅助函数 ---
